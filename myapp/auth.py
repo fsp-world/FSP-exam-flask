@@ -1,3 +1,4 @@
+import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from myapp import APP, db, limiter
 from myapp.db_model import ActivationToken, RegistrationLimit, ResetPasswordToken, Token, User, UserStatus
+from myapp.logging_config import sanitize_log_value
 from myapp.mail import activation_mail, reset_password_mail, send_mail
 from myapp.utils import is_password_complexity_valid, validate_username
 
@@ -22,6 +24,16 @@ auth = Blueprint("auth", __name__)
 
 # JWT 签发方标识
 JWT_ISSUER = "fsp-exam"
+
+logger = logging.getLogger(__name__)
+
+
+def _client_ip() -> str:
+    """客户端 IP：优先 X-Forwarded-For 第一个值（适配反向代理），否则用 remote_addr"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
 
 
 @auth.route("/login", methods=["POST"])
@@ -41,6 +53,7 @@ def login():
             temp = current_user.whitelist
             play_permission: bool = True if len(temp) > 0 else False
 
+            logger.info("登录成功 user=%s uid=%s ip=%s", sanitize_log_value(user.username), user.id, _client_ip())
             return jsonify(
                 {
                     "code": 0,
@@ -52,7 +65,11 @@ def login():
                 }
             )
         else:
+            # 返回给前端不区分具体原因（避免账号枚举），日志中区分以便排查
+            reason = "用户不存在" if user is None else "密码错误"
+            logger.warning("登录失败 user=%s ip=%s 原因=%s", sanitize_log_value(username), _client_ip(), reason)
             return jsonify({"code": 1, "desc": "用户名或密码错误!"})
+    logger.warning("登录失败 ip=%s 原因=请求字段错误", _client_ip())
     return jsonify({"code": 1, "desc": "字段错误！"})
 
 
@@ -68,9 +85,21 @@ def logout():
         stmt = select(Token).where(Token.token == token)
         tk = db.session.scalar(stmt)
         if tk is None:
+            logger.warning(
+                "退出失败 user=%s ip=%s 原因=token 不存在",
+                sanitize_log_value(current_user.username),
+                _client_ip(),
+            )
             return jsonify({"code": 4, "desc": "Token not found"})
+
+        # commit 后实例属性会过期，先取出来避免多一次查询
+        username = sanitize_log_value(current_user.username)
+        user_id = current_user.id
+
         db.session.delete(tk)
         db.session.commit()
+
+        logger.info("退出成功 user=%s uid=%s ip=%s", username, user_id, _client_ip())
         return jsonify({"code": 0, "desc": "退出成功"})
     return jsonify({"code": 1, "desc": "error"})
 
@@ -79,18 +108,21 @@ def logout():
 def register():
     req_data = request.json
     if not req_data:
+        logger.info("注册被拒绝 ip=%s 原因=请求数据错误", _client_ip())
         return jsonify({"code": 1, "desc": "请求数据错误"})
 
     # 获取客户端IP
     client_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
     if client_ip is None:
+        logger.warning("注册被拒绝 ip=unknown 原因=无法获取用户IP")
         return jsonify({"code": 1, "desc": "无法获取用户IP"})
 
     client_ip_split = client_ip.split(",")[0]
 
     # 检查IP注册限制
     if check_ip_registration_limit(client_ip_split):
+        logger.warning("注册被拒绝 ip=%s 原因=该 IP 注册次数过多", client_ip_split)
         return jsonify({"code": 5, "desc": "该IP注册次数过多，请稍后再试!"})
 
     raw_username = req_data.get("username", "")
@@ -100,24 +132,34 @@ def register():
 
     # 验证必填字段
     if not all([raw_username, password, re_password]):
+        logger.info("注册被拒绝 ip=%s 原因=表单字段缺失", client_ip_split)
         return jsonify({"code": 1, "desc": "表单错误!"})
 
     # 验证用户名
     username_result = validate_username(raw_username)
     if username_result["code"] != 0:
+        logger.info(
+            "注册被拒绝 user=%s ip=%s 原因=%s",
+            sanitize_log_value(raw_username),
+            client_ip_split,
+            sanitize_log_value(username_result["desc"]),
+        )
         return jsonify(username_result)
     username = username_result["username"]
 
     # 验证密码一致性
     if password != re_password:
+        logger.info("注册被拒绝 user=%s ip=%s 原因=两次密码不一致", sanitize_log_value(username), client_ip_split)
         return jsonify({"code": 2, "desc": "密码与重复密码不一致!"})
 
     # 验证密码是否合法
     if not is_password_complexity_valid(password):
+        logger.info("注册被拒绝 user=%s ip=%s 原因=密码不合法", sanitize_log_value(username), client_ip_split)
         return jsonify({"code": 2, "desc": "密码不合法!"})
 
     # 验证 QQ 号格式（QQ 号不能带邮箱后缀）
     if "@qq.com" in user_qq.lower():
+        logger.info("注册被拒绝 user=%s ip=%s 原因=QQ 号带邮箱后缀", sanitize_log_value(username), client_ip_split)
         return jsonify({"code": 2, "desc": "请填写纯QQ号，不要带 @qq.com 后缀!"})
 
     # 验证 QQ 号
@@ -125,6 +167,12 @@ def register():
     existing_user = db.session.scalar(stmt)
 
     if existing_user:
+        logger.info(
+            "注册被拒绝 user=%s qq=%s ip=%s 原因=QQ 号已存在",
+            sanitize_log_value(username),
+            sanitize_log_value(user_qq),
+            client_ip_split,
+        )
         return jsonify({"code": 3, "desc": "QQ号已存在!"})
 
     # 创建用户
@@ -143,6 +191,14 @@ def register():
 
         db.session.commit()
 
+        logger.info(
+            "注册成功 user=%s uid=%s qq=%s ip=%s",
+            sanitize_log_value(new_user.username),
+            new_user.id,
+            sanitize_log_value(new_user.user_qq),
+            client_ip_split,
+        )
+
         token = create_token(new_user)
         return jsonify(
             {
@@ -156,6 +212,12 @@ def register():
         )
     except IntegrityError:
         db.session.rollback()
+        logger.exception(
+            "注册失败 user=%s qq=%s ip=%s 原因=数据库唯一约束冲突",
+            sanitize_log_value(username),
+            sanitize_log_value(user_qq),
+            client_ip_split,
+        )
         return jsonify({"code": 5, "desc": "注册失败，请稍后再试"})
 
 

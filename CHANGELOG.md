@@ -22,9 +22,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增统一日志模块
+    - 默认仅输出到 stdout 交由 systemd/Docker 收集
+    - 登录成功/退出成功记 INFO、登录失败记 WARNING、注册成功记 INFO、注册被拒绝记 INFO/WARNING（含具体原因）...
+
 ### Fixed
 
-- 修复管理后台编辑题目接口因前后端请求字段未对齐而无法获取问卷 ID 的问题：从请求体顶层读取 `surveyId`
+- 修复管理后台编辑题目接口因前后端请求字段未对齐而无法获取问卷 ID 的问题（88606a9）
 
 ### Changed
 

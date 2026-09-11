@@ -15,6 +15,8 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import select
 from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
+from myapp.logging_config import setup_logging
+
 
 class Base(MappedAsDataclass, DeclarativeBase):
     pass
@@ -57,6 +59,8 @@ def create_app():
     app.debug = os.getenv("GUNICORN_RUNNING") != "1"  # gunicorn 下强制关闭 debug 模式
     app.template_folder = "../templates"
     app.static_folder = "../static"
+
+    setup_logging(app)
 
     login_manager.init_app(app)  # type: ignore[reportUnknownMemberType]
 
