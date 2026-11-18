@@ -1,6 +1,10 @@
 # Changelog
 
-<!-- ## [Unreleased] -->
+## [Unreleased]
+
+### Security
+
+- 加强在线人数查询 API 的参数限制
 
 ## [0.2.5] (2026-08-27)
 
