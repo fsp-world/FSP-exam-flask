@@ -56,6 +56,25 @@ uv run ruff check    # lint
 uv run ruff format   # format
 ```
 
+### Verify CI locally
+
+Reproduce the CI jobs defined in [.github/workflows/ci.yml](.github/workflows/ci.yml) with a single command (works on Windows, Linux and macOS):
+
+```shell
+uv run python scripts/ci_check.py
+```
+
+The script runs `uv sync --dev`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pyright` and `uv run pytest` — the same commands as CI — and stops at the first failure with a non-zero exit code.
+
+- `--skip-sync`: skip `uv sync` (dependencies already installed or offline)
+- `--skip-tests`: run only lint and type checks, skipping pytest
+
+```shell
+uv run python scripts/ci_check.py --skip-sync --skip-tests
+```
+
+> Formatting must be verified with `ruff format --check`. Running `ruff format` rewrites files in place and always exits successfully, so it cannot tell whether CI would fail.
+
 ## Database Schema Sync
 
 Compare the DDL differences between two databases (e.g., development vs. production) and generate synchronization SQL.
